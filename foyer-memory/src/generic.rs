@@ -110,6 +110,7 @@ where
     /// Insert a new entry into the cache. The handle for the new entry is returned.
     // TODO(MrCroxx): use `expect` after `lint_reasons` is stable.
     #[allow(clippy::type_complexity)]
+    #[allow(clippy::too_many_arguments)]
     unsafe fn insert<AK, AV>(
         &mut self,
         hash: u64,
@@ -117,6 +118,7 @@ where
         value: AV,
         weight: usize,
         context: <E::Handle as Handle>::Context,
+        put_eviction: bool,
         last_reference_entries: &mut Vec<(Arc<K>, Arc<V>, <E::Handle as Handle>::Context, usize)>,
     ) -> NonNull<E::Handle>
     where
@@ -128,7 +130,7 @@ where
 
         let mut handle = self.state.object_pool.acquire();
         handle.init(hash, (key.clone(), value), weight, context);
-        let mut ptr = unsafe { NonNull::new_unchecked(Box::into_raw(handle)) };
+        let ptr = unsafe { NonNull::new_unchecked(Box::into_raw(handle)) };
 
         self.evict(weight, last_reference_entries);
 
@@ -148,13 +150,15 @@ where
         } else {
             self.state.metrics.insert.fetch_add(1, Ordering::Relaxed);
         }
-        self.eviction.push(ptr);
 
         debug_assert!(ptr.as_ref().base().is_in_indexer());
-        debug_assert!(ptr.as_ref().base().is_in_indexer());
+
+        if put_eviction {
+            self.eviction.push(ptr);
+            debug_assert!(ptr.as_ref().base().is_in_eviction());
+        }
 
         self.usage.fetch_add(weight, Ordering::Relaxed);
-        ptr.as_mut().base_mut().inc_refs();
 
         ptr
     }
@@ -539,6 +543,41 @@ where
         AK: Into<Arc<K>> + Send + 'static,
         AV: Into<Arc<V>> + Send + 'static,
     {
+        self.insertor_place_with_context(key, value, context, true)
+    }
+
+    pub fn place<AK, AV>(self: &Arc<Self>, key: AK, value: AV) -> GenericCacheEntry<K, V, E, I, L, S>
+    where
+        AK: Into<Arc<K>> + Send + 'static,
+        AV: Into<Arc<V>> + Send + 'static,
+    {
+        self.insert_with_context(key, value, CacheContext::default())
+    }
+
+    pub fn place_with_context<AK, AV>(
+        self: &Arc<Self>,
+        key: AK,
+        value: AV,
+        context: CacheContext,
+    ) -> GenericCacheEntry<K, V, E, I, L, S>
+    where
+        AK: Into<Arc<K>> + Send + 'static,
+        AV: Into<Arc<V>> + Send + 'static,
+    {
+        self.insertor_place_with_context(key, value, context, false)
+    }
+
+    fn insertor_place_with_context<AK, AV>(
+        self: &Arc<Self>,
+        key: AK,
+        value: AV,
+        context: CacheContext,
+        insert: bool,
+    ) -> GenericCacheEntry<K, V, E, I, L, S>
+    where
+        AK: Into<Arc<K>> + Send + 'static,
+        AV: Into<Arc<V>> + Send + 'static,
+    {
         let key = key.into();
         let value = value.into();
         let hash = self.hash_builder.hash_one(&key);
@@ -549,9 +588,11 @@ where
         let (entry, waiters) = unsafe {
             let mut shard = self.shards[hash as usize % self.shards.len()].lock();
             let waiters = shard.waiters.remove(&key);
-            let mut ptr = shard.insert(hash, key, value, weight, context.into(), &mut to_deallocate);
+            let mut ptr = shard.insert(hash, key, value, weight, context.into(), insert, &mut to_deallocate);
+            let handle = ptr.as_mut();
+            handle.base_mut().inc_refs();
             if let Some(waiters) = waiters.as_ref() {
-                ptr.as_mut().base_mut().inc_refs_by(waiters.len());
+                handle.base_mut().inc_refs_by(waiters.len());
             }
             let entry = GenericCacheEntry {
                 cache: self.clone(),
