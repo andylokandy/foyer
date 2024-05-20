@@ -13,7 +13,7 @@ readme = "../README.md"
 [dependencies]
 ahash = "0.8"
 # TODO(MrCroxx): Remove this after `allocator_api` is stable.
-allocator-api2 = "0.2"
+allocator-api2 = { version = "0.2", default-features = false }
 anyhow = "1.0"
 # TODO(MrCroxx): use `array_chunks` after `#![feature(array_chunks)]` is stable.
 array-util = "1"
