@@ -326,7 +326,7 @@ where
         mut ptr: NonNull<E::Handle>,
     ) -> Option<(K, V, <E::Handle as Handle>::Context, usize)> {
         tracing::warn!(
-            "[drop]  refs by 1 for ptr: {:?}, original refs: {}",
+            "[drop] dec refs by 1 for ptr: {:?}, original refs: {}",
             ptr,
             ptr.as_ref().base().refs()
         );
