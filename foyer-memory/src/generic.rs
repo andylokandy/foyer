@@ -158,6 +158,8 @@ where
 
         self.usage.fetch_add(weight, Ordering::Relaxed);
         self.state.metrics.memory_usage.increment(weight as f64);
+
+        tracing::warn!("[emplace] inc refs by 1 for key: {:?}", ptr.as_ref().key());
         ptr.as_mut().base_mut().inc_refs();
 
         ptr
@@ -182,6 +184,7 @@ where
         strict_assert!(base.is_in_indexer());
 
         base.set_deposit(false);
+        tracing::warn!("[get] inc refs by 1 for key: {:?}", ptr.as_ref().key());
         base.inc_refs();
         self.eviction.acquire(ptr);
 
@@ -228,6 +231,7 @@ where
         strict_assert!(!handle.base().is_in_indexer());
         strict_assert!(!handle.base().is_in_eviction());
 
+        tracing::warn!("[remove] inc refs by 1 for key: {:?}", ptr.as_ref().key());
         handle.base_mut().inc_refs();
 
         Some(ptr)
@@ -306,6 +310,7 @@ where
         &mut self,
         mut ptr: NonNull<E::Handle>,
     ) -> Option<(K, V, <E::Handle as Handle>::Context, usize)> {
+        tracing::warn!("[drop] dec refs by 1 for key: {:?}", ptr.as_ref().key());
         ptr.as_mut().base_mut().dec_refs();
         self.try_release_handle(ptr, true)
     }
@@ -573,6 +578,11 @@ where
             let waiters = shard.waiters.remove(&key);
             let mut ptr = shard.emplace(hash, key, value, weight, context.into(), deposit, &mut to_deallocate);
             if let Some(waiters) = waiters.as_ref() {
+                tracing::warn!(
+                    "[emplace] inc refs by {} (waiters) for key: {:?}",
+                    waiters.len(),
+                    ptr.as_ref().key()
+                );
                 // Increase the reference count within the lock section.
                 ptr.as_mut().base_mut().inc_refs_by(waiters.len());
                 strict_assert_eq!(ptr.as_ref().base().refs(), waiters.len() + 1);
@@ -882,6 +892,7 @@ where
         unsafe {
             let base = ptr.as_mut().base_mut();
             strict_assert!(base.has_refs());
+            tracing::warn!("[clone] inc refs by 1 for key: {:?}", ptr.as_ref().key());
             base.inc_refs();
         }
 
