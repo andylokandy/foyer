@@ -165,6 +165,7 @@ where
             ptr.as_ref().base().refs()
         );
         ptr.as_mut().base_mut().inc_refs();
+        let _ = ptr.as_ref().key();
 
         ptr
     }
@@ -194,6 +195,7 @@ where
             ptr.as_ref().base().refs()
         );
         base.inc_refs();
+        let _ = ptr.as_ref().key();
         self.eviction.acquire(ptr);
 
         Some(ptr)
@@ -245,6 +247,7 @@ where
             ptr.as_ref().base().refs()
         );
         handle.base_mut().inc_refs();
+        let _ = ptr.as_ref().key();
 
         Some(ptr)
     }
@@ -328,6 +331,7 @@ where
             ptr.as_ref().base().refs()
         );
         ptr.as_mut().base_mut().dec_refs();
+        let _ = ptr.as_ref().key();
         self.try_release_handle(ptr, true)
     }
 
@@ -602,6 +606,7 @@ where
                 );
                 // Increase the reference count within the lock section.
                 ptr.as_mut().base_mut().inc_refs_by(waiters.len());
+                let _ = ptr.as_ref().key();
                 strict_assert_eq!(ptr.as_ref().base().refs(), waiters.len() + 1);
             }
             let entry = GenericCacheEntry {
@@ -915,6 +920,7 @@ where
                 ptr.as_ref().base().refs()
             );
             base.inc_refs();
+            let _ = ptr.as_ref().key();
         }
 
         Self {
