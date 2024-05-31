@@ -277,6 +277,27 @@ where
             };
             self.state.metrics.memory_evict.increment(1);
             let base = evicted.as_ref().base();
+
+            /* DEBUG */
+            if !base.is_in_indexer() {
+                tracing::error!(
+                    "[SHIT]: evict key: {:?} from eviction, but not in indexer",
+                    evicted.as_ref().key()
+                );
+                tracing::error!(
+                    "[SHIT]: ptr: {evicted:?}, is in eviction: {}, is in indexer: {}",
+                    evicted.as_ref().base().is_in_eviction(),
+                    evicted.as_ref().base().is_in_indexer()
+                );
+                tracing::error!(
+                    "[SHIT]: query indexer: {}",
+                    self.indexer
+                        .get(evicted.as_ref().base().hash(), evicted.as_ref().key())
+                        .is_some()
+                );
+            }
+            /* DEBUG */
+
             strict_assert!(base.is_in_indexer());
             strict_assert!(!base.is_in_eviction());
             if let Some(entry) = self.try_release_handle(evicted, false) {
