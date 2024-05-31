@@ -289,11 +289,10 @@ where
                     evicted.as_ref().base().is_in_eviction(),
                     evicted.as_ref().base().is_in_indexer()
                 );
+
                 tracing::error!(
-                    "[SHIT]: query indexer: {}",
-                    self.indexer
-                        .get(evicted.as_ref().base().hash(), evicted.as_ref().key())
-                        .is_some()
+                    "[SHIT]: query indexer with the same key: {:?}",
+                    self.indexer.get(evicted.as_ref().base().hash(), evicted.as_ref().key())
                 );
             }
             /* DEBUG */

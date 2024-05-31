@@ -508,10 +508,11 @@ where
 #[cfg(test)]
 mod tests {
 
+    use std::fmt::Debug;
+
     use itertools::Itertools;
 
     use super::*;
-    use crate::intrusive_adapter;
 
     #[derive(Debug)]
     struct DlistItem {
@@ -527,6 +528,14 @@ mod tests {
             }
         }
     }
+
+    impl PartialEq for DlistItem {
+        fn eq(&self, other: &Self) -> bool {
+            self.val == other.val
+        }
+    }
+
+    impl Eq for DlistItem {}
 
     #[derive(Debug, Default)]
     struct DlistAdapter;
@@ -547,8 +556,6 @@ mod tests {
             NonNull::new_unchecked((item.as_ptr() as *const u8).add(std::mem::offset_of!(DlistItem, link)) as *mut _)
         }
     }
-
-    intrusive_adapter! { DlistArcAdapter = DlistItem { link: DlistLink } }
 
     #[test]
     fn test_dlist_simple() {
@@ -582,5 +589,67 @@ mod tests {
         assert_eq!(i1.val, 1);
         assert!(l.pop_front().is_none());
         assert_eq!(l.len(), 0);
+    }
+
+    fn item<T>(pool: &mut Vec<NonNull<T>>, val: T) -> NonNull<T> {
+        let ptr = unsafe { NonNull::new_unchecked(Box::into_raw(Box::new(val))) };
+        pool.push(ptr);
+        ptr
+    }
+
+    fn clean<T>(pool: Vec<NonNull<T>>) {
+        for ptr in pool {
+            let _ = unsafe { Box::from_raw(ptr.as_ptr()) };
+        }
+    }
+
+    fn assert_val_eq<T: Eq + Debug>(v1: Option<NonNull<T>>, v2: Option<T>) {
+        unsafe { assert_eq!(v1.map(|ptr| ptr.as_ref()), v2.as_ref()) }
+    }
+
+    #[test]
+    fn test_dlist_basic() {
+        let mut pool = vec![];
+        let mut m = Dlist::<DlistAdapter>::new();
+
+        assert_eq!(m.pop_front(), None);
+        assert_eq!(m.pop_back(), None);
+        assert_eq!(m.pop_front(), None);
+        m.push_front(item(&mut pool, DlistItem::new(1)));
+        assert_val_eq(m.pop_front(), Some(DlistItem::new(1)));
+        m.push_back(item(&mut pool, DlistItem::new(2)));
+        m.push_back(item(&mut pool, DlistItem::new(3)));
+        assert_eq!(m.len(), 2);
+        assert_val_eq(m.pop_front(), Some(DlistItem::new(2)));
+        assert_val_eq(m.pop_front(), Some(DlistItem::new(3)));
+        assert_eq!(m.len(), 0);
+        assert_val_eq(m.pop_front(), None);
+        m.push_back(item(&mut pool, DlistItem::new(1)));
+        m.push_back(item(&mut pool, DlistItem::new(3)));
+        m.push_back(item(&mut pool, DlistItem::new(5)));
+        m.push_back(item(&mut pool, DlistItem::new(7)));
+        assert_val_eq(m.pop_front(), Some(DlistItem::new(1)));
+
+        let mut n = Dlist::<DlistAdapter>::new();
+        n.push_front(item(&mut pool, DlistItem::new(2)));
+        n.push_front(item(&mut pool, DlistItem::new(3)));
+        {
+            assert_eq!(n.front().unwrap().val, 3);
+            let x = n.front_mut().unwrap();
+            assert_eq!(x.val, 3);
+            x.val = 0;
+        }
+        {
+            assert_eq!(n.back().unwrap().val, 2);
+            let y = n.back_mut().unwrap();
+            assert_eq!(y.val, 2);
+            y.val = 1;
+        }
+        assert_val_eq(n.pop_front(), Some(DlistItem::new(0)));
+        assert_val_eq(n.pop_front(), Some(DlistItem::new(1)));
+
+        drop(m);
+        drop(n);
+        clean(pool);
     }
 }
