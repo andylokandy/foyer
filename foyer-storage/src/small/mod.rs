@@ -12,4 +12,17 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 
+pub mod bloom_filter;
+pub mod bucket;
 pub mod generic;
+
+#[cfg(test)]
+mod tests {
+    use tokio::{fs::File, io::AsyncWriteExt};
+
+    #[tokio::test]
+    async fn test() {
+        let mut f: File = todo!();
+        f.write(&[0; 1024]).await.unwrap();
+    }
+}

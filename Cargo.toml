@@ -20,6 +20,8 @@ tokio = { package = "madsim-tokio", version = "0.2", features = [
     "time",
     "signal",
     "fs",
+    # remove io
+    "io-util",
 ] }
 serde = { version = "1", features = ["derive", "rc"] }
 test-log = { version = "0.2", default-features = false, features = [

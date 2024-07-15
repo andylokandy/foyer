@@ -13,19 +13,21 @@
 //  limitations under the License.use std::marker::PhantomData;
 
 use foyer_common::code::{HashBuilder, StorageKey, StorageValue};
-use foyer_memory::CacheEntry;
+use foyer_memory::{Cache, CacheEntry};
 use futures::Future;
-use tokio::sync::oneshot;
+use tokio::{runtime::Handle, sync::oneshot};
 
 use std::{borrow::Borrow, fmt::Debug, hash::Hash, marker::PhantomData, sync::Arc};
 
 use crate::{
-    device::IoBuffer,
+    device::{IoBuffer, MonitoredDevice},
     error::Result,
     serde::KvInfo,
     storage::{Storage, WaitHandle},
     DeviceStats,
 };
+
+use super::bucket::BucketManager;
 
 pub struct GenericSmallStorageConfig<K, V, S>
 where
@@ -53,7 +55,10 @@ where
     V: StorageValue,
     S: HashBuilder + Debug,
 {
-    _marker: PhantomData<(K, V, S)>,
+    bucket_manager: BucketManager,
+    device: MonitoredDevice,
+    memory: Cache<K, V, S>,
+    runtime: Handle,
 }
 
 impl<K, V, S> Debug for GenericSmallStorage<K, V, S>
@@ -74,7 +79,55 @@ where
     S: HashBuilder + Debug,
 {
     fn clone(&self) -> Self {
-        Self { _marker: PhantomData }
+        Self {
+            bucket_manager: self.bucket_manager.clone(),
+            device: self.device.clone(),
+            memory: self.memory.clone(),
+            runtime: self.runtime.clone(),
+        }
+    }
+}
+
+impl<K, V, S> GenericSmallStorage<K, V, S>
+where
+    K: StorageKey,
+    V: StorageValue,
+    S: HashBuilder + Debug,
+{
+    fn enquque(&self, entry: CacheEntry<K, V, S>, buffer: IoBuffer, info: KvInfo, tx: oneshot::Sender<Result<bool>>) {
+        let idx = entry.hash() as usize % self.bucket_manager.buckets();
+
+        let bloom_filter = Arc::clone(self.bucket_manager.bloom_filter(idx));
+        let bucket_manager = self.bucket_manager.clone();
+
+        self.runtime.spawn(async move {
+            let res = bucket_manager
+                .with(idx, |guard| {
+                    guard.insert(info, &buffer[..]);
+                })
+                .await;
+            let _ = tx.send(res.map(|_| true));
+            bloom_filter.write().insert(entry.hash());
+            drop(entry);
+        });
+    }
+
+    fn delete<Q>(&self, _key: &Q) -> WaitHandle<impl Future<Output = Result<bool>> + Send + 'static>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        WaitHandle::new(async move { todo!() })
+    }
+
+    fn may_contains<Q>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        let hash = self.memory.hash_builder().hash_one(key);
+        let idx = hash as usize % self.bucket_manager.buckets();
+        self.bucket_manager.bloom_filter(idx).read().lookup(hash)
     }
 }
 
@@ -99,12 +152,12 @@ where
 
     fn enqueue(
         &self,
-        _entry: CacheEntry<Self::Key, Self::Value, Self::BuildHasher>,
-        _buffer: IoBuffer,
-        _info: KvInfo,
-        _tx: oneshot::Sender<Result<bool>>,
+        entry: CacheEntry<Self::Key, Self::Value, Self::BuildHasher>,
+        buffer: IoBuffer,
+        info: KvInfo,
+        tx: oneshot::Sender<Result<bool>>,
     ) {
-        todo!()
+        self.enquque(entry, buffer, info, tx)
     }
 
     // FIXME: REMOVE THE CLIPPY IGNORE.
@@ -126,12 +179,12 @@ where
         WaitHandle::new(async move { todo!() })
     }
 
-    fn may_contains<Q>(&self, _key: &Q) -> bool
+    fn may_contains<Q>(&self, key: &Q) -> bool
     where
-        Self::Key: std::borrow::Borrow<Q>,
-        Q: std::hash::Hash + Eq + ?Sized,
+        Self::Key: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
     {
-        todo!()
+        self.may_contains(key)
     }
 
     async fn destroy(&self) -> Result<()> {

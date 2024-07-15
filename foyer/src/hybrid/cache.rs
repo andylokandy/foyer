@@ -32,6 +32,7 @@ use foyer_common::{
     code::{HashBuilder, StorageKey, StorageValue},
     future::Diversion,
     metrics::Metrics,
+    strict_assert,
     tracing::{InRootSpan, TracingConfig},
 };
 use foyer_memory::{Cache, CacheContext, CacheEntry, Fetch, FetchMark, FetchState};
@@ -237,7 +238,7 @@ where
 
         if let Some((k, v)) = self
             .storage
-            .load(key)
+            .get(key)
             .in_span(Span::enter_with_parent("foyer::hybrid::cache::get::poll", &span))
             .await?
         {
@@ -272,7 +273,7 @@ where
         let fetch = self.memory.fetch(key.clone(), || {
             let store = self.storage.clone();
             async move {
-                match store.load(&key).await.map_err(anyhow::Error::from) {
+                match store.get(&key).await.map_err(anyhow::Error::from) {
                     Err(e) => Err(ObtainFetchError::Err(e)),
                     Ok(None) => Err(ObtainFetchError::NotExist),
                     Ok(Some((k, _))) if key != k => Err(ObtainFetchError::NotExist),
@@ -332,6 +333,9 @@ where
     /// Check if the hybrid cache contains a cached entry with the given key.
     ///
     /// `contains` may return a false-positive result if there is a hash collision with the given key.
+    ///
+    /// The false-positive result doesn't violate the consistency,
+    /// because cache doesn't guarantee no data removed in background.
     pub fn contains<Q>(&self, key: &Q) -> bool
     where
         K: Borrow<Q>,
@@ -487,21 +491,16 @@ where
                 let metrics = self.metrics.clone();
 
                 async move {
-                    let load = match store.load(&key).await.map_err(anyhow::Error::from) {
-                        Ok(load) => load,
-                        Err(e) => return Err(e).into(),
-                    };
-
-                    match load {
-                        None => {}
-                        Some((k, _)) if key != k => {}
-                        Some((_, v)) => {
+                    match store.get(&key).await.map_err(anyhow::Error::from) {
+                        Ok(Some((k, v))) => {
+                            strict_assert!(k == key);
                             metrics.hybrid_hit.increment(1);
                             metrics.hybrid_hit_duration.record(now.elapsed());
-
                             return Ok(v).into();
                         }
-                    }
+                        Err(e) => return Err(e).into(),
+                        Ok(None) => {}
+                    };
 
                     metrics.hybrid_miss.increment(1);
                     metrics.hybrid_miss_duration.record(now.elapsed());

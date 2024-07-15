@@ -49,7 +49,7 @@ async fn test_store(
     let remains = recorder.remains();
 
     for i in 0..INSERTS as u64 * (LOOPS + 1) as u64 {
-        let value = match store.load(&i).await.unwrap() {
+        let value = match store.get(&i).await.unwrap() {
             Some((k, v)) => {
                 if k == i {
                     Some(v)
@@ -74,7 +74,7 @@ async fn test_store(
         let remains = recorder.remains();
 
         for i in 0..INSERTS as u64 * (LOOPS + 1) as u64 {
-            let value = match store.load(&i).await.unwrap() {
+            let value = match store.get(&i).await.unwrap() {
                 Some((k, v)) => {
                     if k == i {
                         Some(v)
@@ -102,7 +102,7 @@ async fn test_store(
         let remains = recorder.remains();
 
         for i in 0..INSERTS as u64 * (LOOPS + 1) as u64 {
-            let value = match store.load(&i).await.unwrap() {
+            let value = match store.get(&i).await.unwrap() {
                 Some((k, v)) => {
                     if k == i {
                         Some(v)
