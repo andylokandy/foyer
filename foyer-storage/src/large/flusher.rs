@@ -28,6 +28,7 @@ use foyer_common::{
 };
 use foyer_memory::CacheEntry;
 use futures::future::{try_join, try_join_all};
+use parking_lot::Mutex;
 use std::{
     fmt::Debug,
     sync::{atomic::Ordering, Arc},
@@ -41,18 +42,13 @@ use tokio::{
 use crate::{Dev, DevExt};
 
 use super::{
+    batch::{BatchMut, InvalidStats},
     generic::GenericLargeStorageConfig,
     indexer::{EntryAddress, Indexer},
     reclaimer::Reinsertion,
     serde::Sequence,
     tombstone::{Tombstone, TombstoneLog},
 };
-
-#[derive(Debug)]
-pub struct InvalidStats {
-    pub region: RegionId,
-    pub size: usize,
-}
 
 #[derive(Debug)]
 pub enum Submission<K, V, S>
@@ -144,10 +140,13 @@ where
     V: StorageValue,
     S: HashBuilder + Debug,
 {
+    batchv2: Arc<Mutex<BatchMut<K, V, S>>>,
+
     tx: mpsc::UnboundedSender<Submission<K, V, S>>,
 
     flight: Arc<Semaphore>,
 
+    compression: Compression,
     metrics: Arc<Metrics>,
 }
 
@@ -159,8 +158,10 @@ where
 {
     fn clone(&self) -> Self {
         Self {
+            batchv2: self.batchv2.clone(),
             tx: self.tx.clone(),
             flight: self.flight.clone(),
+            compression: self.compression,
             metrics: self.metrics.clone(),
         }
     }
@@ -184,6 +185,14 @@ where
         metrics: Arc<Metrics>,
         runtime: Handle,
     ) -> Result<Self> {
+        let buffer_size = config.buffer_threshold / config.flushers;
+        let batchv2 = Arc::new(Mutex::new(BatchMut::new(
+            buffer_size,
+            region_manager.clone(),
+            device.clone(),
+            indexer.clone(),
+        )));
+
         let (tx, rx) = mpsc::unbounded_channel();
         let batch = Batch::default();
         let flight = Arc::new(Semaphore::new(1));
@@ -210,12 +219,26 @@ where
             }
         });
 
-        Ok(Self { tx, flight, metrics })
+        Ok(Self {
+            batchv2,
+            tx,
+            flight,
+            compression: config.compression,
+            metrics,
+        })
     }
 
     pub fn submit(&self, submission: Submission<K, V, S>) {
-        if let Err(e) = self.tx.send(submission) {
-            tracing::warn!("[flusher]: submit error, e: {e}");
+        match submission {
+            Submission::CacheEntry {
+                entry,
+                buffer,
+                info,
+                sequence,
+                tx,
+            } => self.entry(entry, buffer, info, sequence, tx),
+            Submission::Tombstone { tombstone, stats, tx } => self.tombstone(tombstone, stats, tx),
+            Submission::Reinsertion { reinsertion, tx } => self.reinsertion(reinsertion, tx),
         }
     }
 
@@ -223,6 +246,44 @@ where
         // TODO(MrCroxx): Consider a better implementation?
         let _permit = self.flight.acquire().await;
         Ok(())
+    }
+
+    fn entry(
+        &self,
+        entry: CacheEntry<K, V, S>,
+        buffer: IoBytes,
+        info: KvInfo,
+        sequence: u64,
+        tx: oneshot::Sender<Result<bool>>,
+    ) {
+        let header = EntryHeader {
+            key_len: info.key_len as _,
+            value_len: info.value_len as _,
+            hash: entry.hash(),
+            sequence,
+            checksum: Checksummer::checksum(&buffer),
+            compression: self.compression,
+        };
+
+        let mut allocation = match self.batchv2.lock().entry(header.entry_len(), entry, tx, sequence) {
+            Some(allocation) => allocation,
+            None => {
+                self.metrics.storage_queue_drop.increment(1);
+                return;
+            }
+        };
+        strict_assert!(allocation.len() > header.entry_len());
+
+        header.write(&mut allocation[0..EntryHeader::serialized_len()]);
+        (&mut allocation[EntryHeader::serialized_len()..header.entry_len()]).copy_from_slice(&buffer);
+    }
+
+    fn tombstone(&self, tombstone: Tombstone, stats: Option<InvalidStats>, tx: oneshot::Sender<Result<bool>>) {
+        self.batchv2.lock().tombstone(tombstone, stats, tx);
+    }
+
+    fn reinsertion(&self, reinsertion: Reinsertion, tx: oneshot::Sender<Result<bool>>) {
+        self.batchv2.lock().reinsertion(&reinsertion, tx);
     }
 }
 

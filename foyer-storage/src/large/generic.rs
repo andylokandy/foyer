@@ -59,7 +59,8 @@ use tokio::{
 };
 
 use super::{
-    flusher::{Flusher, InvalidStats, Submission},
+    batch::InvalidStats,
+    flusher::{Flusher, Submission},
     indexer::Indexer,
     reclaimer::Reclaimer,
     recover::{RecoverMode, RecoverRunner},
